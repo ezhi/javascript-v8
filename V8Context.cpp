@@ -383,14 +383,28 @@ V8Context::eval(SV* source, SV* origin) {
     }
 }
 
+class SvExternal : public String::ExternalAsciiStringResource {
+    public:
+        SvExternal (SV *sv_)
+            : ExternalAsciiStringResource()
+            , sv(sv_)
+        { }
+
+        virtual const char* data() const { return SvPVutf8_nolen(sv); }
+        virtual size_t length() const { return SvCUR(sv); }
+
+        virtual void Dispose() {}
+
+    private:
+        SV *sv;
+};
+
 Handle<Value>
 V8Context::sv2v8(SV *sv, Handle<Object> seen) {
     if (SvROK(sv))
         return rv2v8(sv, seen);
     if (SvPOK(sv)) {
-        // Upgrade string to UTF-8 if needed
-        char *utf8 = SvPVutf8_nolen(sv);
-        return String::New(utf8, SvCUR(sv));
+        return String::NewExternal(new SvExternal(sv));
     }
     if (SvIOK(sv)) {
         IV v = SvIV(sv);
