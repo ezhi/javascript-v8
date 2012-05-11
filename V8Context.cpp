@@ -219,6 +219,20 @@ public:
     bool returns_list;
 };
 
+class PerlFunctionData;
+
+Handle<Object> MakeFunction(V8Context* context, PerlFunctionData* fd) {
+    Handle<Value> wrap(External::Wrap(fd));
+
+    return Handle<Object>::Cast(
+        context->make_function->Call(
+            context->context->Global(),
+            1,
+            &wrap
+        )
+    );
+}
+
 class PerlFunctionData : public PerlObjectData {
 private:
     SV *rv;
@@ -229,18 +243,8 @@ protected:
 
 public:
     PerlFunctionData(V8Context* context_, SV *cv)
-        : PerlObjectData(
-              context_,
-              Handle<Object>::Cast(
-                  context_->make_function->Call(
-                      context_->context->Global(),
-                      1,
-                      &External::Wrap(this)
-                  )
-              ),
-              cv
-          )
-       , rv(cv ? newRV_noinc(cv) : NULL)
+        : PerlObjectData(context_, MakeFunction(context_, this), cv)
+        , rv(cv ? newRV_noinc(cv) : NULL)
     { }
 
     static Handle<Value> v8invoke(const Arguments& args) {
