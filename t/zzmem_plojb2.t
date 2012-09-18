@@ -19,7 +19,7 @@ sub new {
 package main;
 
 $context->eval('var DATA = []');
-for (1..100000) {
+for (1..200000) {
     print STDERR "$_\r";
     $context->eval('(function(data) { DATA.push(data); })')->(Test->new($_));
 }
