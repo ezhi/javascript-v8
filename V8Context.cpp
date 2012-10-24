@@ -720,77 +720,93 @@ my_gv_setsv(pTHX_ GV* const gv, SV* const sv){
     #define DVAR dVAR;
 #endif
 
-#define SETUP_V8_CALL(ARGS_OFFSET) \
-    DVAR \
-    dXSARGS; \
-\
-    bool die = false; \
-    int count = 1; \
-\
-    { \
-        /* We have to do all this inside a block so that all the proper \
-         * destuctors are called if we need to croak. If we just croak in the \
-         * middle of the block, v8 will segfault at program exit. */ \
-        TryCatch        try_catch; \
-        HandleScope     scope; \
-        V8FunctionData* data = (V8FunctionData*)sv_object_data((SV*)cv); \
-        if (data->context) { \
-        V8Context      *self = data->context; \
-        Handle<Context> ctx  = self->context; \
-        Context::Scope  context_scope(ctx); \
-        Handle<Value>   argv[items - ARGS_OFFSET]; \
-\
-        for (I32 i = ARGS_OFFSET; i < items; i++) { \
-            argv[i - ARGS_OFFSET] = self->sv2v8(ST(i)); \
-        }
+inline bool call_is_method(OP* o) {
+    OP* cvop, *aop;
+    aop = cUNOPx(PL_op)->op_first;
 
-#define CONVERT_V8_RESULT(POP) \
-        if (try_catch.HasCaught()) { \
-            set_perl_error(try_catch); \
-            die = true; \
-        } \
-        else { \
-            if (data->returns_list && GIMME_V == G_ARRAY && result->IsArray()) { \
-                Handle<Array> array = Handle<Array>::Cast(result); \
-                if (GIMME_V == G_ARRAY) { \
-                    count = array->Length(); \
-                    EXTEND(SP, count - items); \
-                    for (int i = 0; i < count; i++) { \
-                        ST(i) = sv_2mortal(self->v82sv(array->Get(Integer::New(i)))); \
-                    } \
-                } \
-                else { \
-                    ST(0) = sv_2mortal(newSViv(array->Length())); \
-                } \
-            } \
-            else { \
-                ST(0) = sv_2mortal(self->v82sv(result)); \
-            } \
-        } \
-        } \
-        else {\
-            die = true; \
-            sv_setpv(ERRSV, "Fatal error: V8 context is no more"); \
-            sv_utf8_upgrade(ERRSV); \
-        } \
-    } \
-\
-    if (die) \
-        croak(NULL); \
-\
-XSRETURN(count);
+    if (!aop)
+        return false;
 
-XS(v8closure) {
-    SETUP_V8_CALL(0)
-    Handle<Value> result = Handle<Function>::Cast(data->object)->Call(ctx->Global(), items, argv);
-    CONVERT_V8_RESULT()
+    if (!aop->op_sibling)
+        aop = cUNOPx(aop)->op_first;
+
+    aop = aop->op_sibling;
+    for (cvop = aop; cvop->op_sibling; cvop = cvop->op_sibling) ;
+
+    return cvop->op_type == OP_METHOD || cvop->op_type == OP_METHOD_NAMED;
 }
 
-XS(v8method) {
-    SETUP_V8_CALL(1)
-    V8ObjectData* This = (V8ObjectData*)SvIV((SV*)SvRV(ST(0)));
-    Handle<Value> result = Handle<Function>::Cast(data->object)->Call(This->object, items - 1, argv);
-    CONVERT_V8_RESULT(POPs);
+XS(v8closure) {
+    DVAR
+    dXSARGS;
+
+    bool die = false;
+    int count = 1;
+
+    {
+        /* We have to do all this inside a block so that all the proper
+         * destuctors are called if we need to croak. If we just croak in the
+         * middle of the block, v8 will segfault at program exit. */
+        TryCatch        try_catch;
+        HandleScope     scope;
+        V8FunctionData* data = (V8FunctionData*)sv_object_data((SV*)cv);
+        if (data->context) {
+            V8Context      *self = data->context;
+            Handle<Context> ctx  = self->context;
+            Context::Scope  context_scope(ctx);
+            Handle<Object>  object;
+            Handle<Value>   argv[items];
+            Handle<Value>   *argv_ptr;
+
+            for (I32 i = 0; i < items; i++) {
+                argv[i] = self->sv2v8(ST(i));
+            }
+
+            if (call_is_method(PL_op)) {
+                object = (*argv)->ToObject();
+                argv_ptr = argv + 1;
+            }
+            else {
+                object = ctx->Global();
+                argv_ptr = argv;
+            }
+
+            Handle<Value> result = Handle<Function>::Cast(data->object)->Call(object, items, argv_ptr);
+
+            if (try_catch.HasCaught()) {
+                set_perl_error(try_catch);
+                die = true;
+            }
+            else {
+                if (data->returns_list && GIMME_V == G_ARRAY && result->IsArray()) {
+                    Handle<Array> array = Handle<Array>::Cast(result);
+                    if (GIMME_V == G_ARRAY) {
+                        count = array->Length();
+                        EXTEND(SP, count - items);
+                        for (int i = 0; i < count; i++) {
+                            ST(i) = sv_2mortal(self->v82sv(array->Get(Integer::New(i))));
+                        }
+                    }
+                    else {
+                        ST(0) = sv_2mortal(newSViv(array->Length()));
+                    }
+                }
+                else {
+                    ST(0) = sv_2mortal(self->v82sv(result));
+                }
+            }
+        }
+        else {
+            die = true;
+            sv_setpv(ERRSV, "Fatal error: V8 context is no more");
+            sv_utf8_upgrade(ERRSV);
+        }
+    }
+
+    if (die)
+        croak(NULL);
+
+    XSRETURN(count);
 }
 
 SV*
@@ -830,7 +846,7 @@ V8Context::object2blessed(Handle<Object> obj) {
 
             Local<Function> fn = Local<Function>::Cast(property);
 
-            CV *code = newXS(NULL, v8method, __FILE__);
+            CV *code = newXS(NULL, v8closure, __FILE__);
             V8ObjectData *data = new V8FunctionData(this, fn, (SV*)code);
 
             GV* gv = (GV*)*hv_fetch(stash, *String::AsciiValue(name), name->Length(), TRUE);

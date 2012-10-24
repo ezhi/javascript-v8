@@ -2,6 +2,7 @@
 
 use Test::More;
 use JavaScript::V8;
+use Storable qw/ freeze thaw /;
 use Data::Dumper;
 
 use utf8;
@@ -55,6 +56,23 @@ Counter.prototype.previousValues = function() {
 Counter.prototype.previousValues.__perlReturnsList = true;
 
 Counter.prototype.__perlPackage = "Counter";
+
+Counter.prototype.STORABLE_freeze = function(obj, cloning) {
+    return JSON.stringify(obj);
+}
+
+Counter.prototype.STORABLE_attach = function(klass, cloning, serialized) {
+    var clone = new Counter();
+    var data = JSON.parse(serialized);
+    for (var k in data)
+        if (data.hasOwnProperty(k))
+            clone[k] = data[k];
+    return clone;
+}
+
+Counter.prototype.methodVsFunctionTest = function(arg) {
+    return [this, arg];
+}
 
 new Counter;
 END
@@ -134,6 +152,27 @@ like $@, qr{SomeError.*at counter\.js:\d+}, 'js method error propagates to perl'
 
     my $c = $context->eval('var c = new Counter(); c.set(77); c.inc(); c.inc(); c');
     is_deeply [$c->previousValues], [1, 77, 78], 'method in list context';
+}
+
+
+{
+    my $context = JavaScript::V8::Context->new( enable_blessing => 1, enable_wantarray => 1 );
+
+    $context->eval($COUNTER_SRC);
+
+    my $c = $context->eval('var c = new Counter(); c.set(77); c.inc(); c.inc(); c');
+    is_deeply [thaw(freeze($c))->previousValues], [$c->previousValues], 'freeze/thaw work';
+
+    $context->eval('Z = 1');
+
+    my $pkg = ref $c;
+    # this is bound to global
+    is((eval "${pkg}::methodVsFunctionTest(1)")->[0]{Z}, 1, 'js function called as an package function');
+    is((eval "${pkg}::methodVsFunctionTest(1)")->[1], 1);
+
+    # this is bound to $c
+    is $c->methodVsFunctionTest(1)->[0], $c;
+    is $c->methodVsFunctionTest(1)->[1], 1;
 }
 
 done_testing;
