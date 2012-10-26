@@ -130,16 +130,21 @@ class V8Context {
         Handle<String>   sv2v8str(SV* sv);
         Handle<Object>   blessed2object(SV *sv);
 
+        PerlObjectData*  blessed2object_convert(SV *sv);
+        PerlObjectData*  blessed2object_to_js(PerlObjectData* pod);
+
         SV* array2sv(Handle<Array>, SvMap& seen);
         SV* object2sv(Handle<Object>, SvMap& seen);
         SV* object2blessed(Handle<Object>);
         SV* function2sv(Handle<Function>);
 
         Persistent<String> string_wrap;
+        Persistent<String> string_to_js;
 
-        void fill_prototype(Handle<Object> prototype, HV* stash);
+        void fill_prototype_isa(Handle<Object> prototype, HV* stash);
+        void fill_prototype_stash(Handle<Object> prototype, HV* stash);
+        void fixup_prototype(Handle<Object> prototype);
         Handle<Object> get_prototype(SV* sv);
-
         ObjectMap prototypes;
 
         ObjectDataMap seen_perl;

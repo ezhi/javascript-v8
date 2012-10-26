@@ -140,4 +140,43 @@ $context->set_flags_from_string("--expose-gc");
     is $context->eval('(function (c) { return c.zzz; })')->($c), "value to persist", 'perl functions are converted once';
 }
 
+{
+    {
+        package CounterCustom;
+
+        use base 'Counter';
+
+        sub to_js {
+            '
+            function Counter(obj) {
+                this.__value = obj.get();
+            };
+
+            Counter.prototype.value = function() {
+                return this.__value;
+            };
+
+            Counter.prototype.increase = function() {
+                return this.__value++;
+            };
+
+            (function() {
+                return new Counter(this);
+            })
+
+            '
+        }
+
+        1
+    }
+
+    my $c = CounterCustom->new;
+
+    $c->set(11);
+    $@ = undef;
+
+    is $context->eval('(function (c) { c.increase(); return c.value(); })')->($c), $c->get + 1;
+    is $context->eval('(function (c) { c.increase(); return c.value(); })')->($c), $c->get + 2;
+}
+
 done_testing;

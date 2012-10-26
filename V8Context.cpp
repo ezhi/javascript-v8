@@ -331,6 +331,7 @@ V8Context::V8Context(
     make_function = Persistent<Function>::New(Handle<Function>::Cast(script->Run()));
 
     string_wrap = Persistent<String>::New(String::New("wrap"));
+    string_to_js = Persistent<String>::New(String::New("to_js"));
 
     number++;
 }
@@ -548,16 +549,60 @@ V8Context::v82sv(Handle<Value> value) {
 }
 
 void
-V8Context::fill_prototype(Handle<Object> prototype, HV* stash) {
+V8Context::fill_prototype_isa(Handle<Object> prototype, HV* stash) {
+    if (AV *isa = mro_get_linear_isa(stash)) {
+        for (int i = 0; i <= av_len(isa); i++) {
+            SV **sv = av_fetch(isa, i, 0);
+            HV *stash = gv_stashsv(*sv, 0);
+            fill_prototype_stash(prototype, stash);
+        }
+    }
+}
+
+void
+V8Context::fill_prototype_stash(Handle<Object> prototype, HV* stash) {
     HE *he;
     while (he = hv_iternext(stash)) {
         SV *key = HeSVKEY_force(he);
-        Local<String> name = String::New(SvPV_nolen(key));
+        char *key_str = SvPV_nolen(key);
+        Local<String> name = String::New(key_str);
 
         if (prototype->Has(name))
             continue;
 
-        prototype->Set(name, (new PerlMethodData(this, SvPV_nolen(key)))->object);
+        PerlFunctionData* pfd
+            = name->Equals(string_to_js) // we want to_js() to be called as a package function
+            ? new PerlFunctionData(this, (SV*)GvCV(gv_fetchmethod(stash, key_str)))
+            : new PerlMethodData(this, key_str);
+
+        prototype->Set(name, pfd->object);
+    }
+}
+
+// parse string returned by $self->to_js() into function
+void
+V8Context::fixup_prototype(Handle<Object> prototype) {
+    Handle<Value> val = prototype->Get(string_to_js);
+
+    if (val.IsEmpty() || !val->IsFunction())
+        return;
+
+    TryCatch try_catch;
+
+    Handle<Value> to_js = Handle<Function>::Cast(val)->Call(context->Global(), 0, NULL);
+    Handle<Script> script = Script::Compile(to_js->ToString());
+
+    if (try_catch.HasCaught()) {
+        set_perl_error(try_catch);
+    } else {
+        Handle<Value> val = script->Run();
+
+        if (val.IsEmpty() || !val->IsFunction()) {
+            set_perl_error(try_catch);
+        }
+        else {
+            prototype->Set(string_to_js, val);
+        }
     }
 }
 
@@ -577,14 +622,8 @@ V8Context::get_prototype(SV *sv) {
     }
     else {
         prototype = prototypes[pkg] = Persistent<Object>::New(Object::New());
-
-        if (AV *isa = mro_get_linear_isa(stash)) {
-            for (int i = 0; i <= av_len(isa); i++) {
-                SV **sv = av_fetch(isa, i, 0);
-                HV *stash = gv_stashsv(*sv, 0);
-                fill_prototype(prototype, stash);
-            }
-        }
+        fill_prototype_isa(prototype, stash);
+        fixup_prototype(prototype);
     }
 
     return prototype;
@@ -625,12 +664,34 @@ V8Context::rv2v8(SV *rv, HandleMap& seen) {
     return Undefined();
 }
 
+PerlObjectData*
+V8Context::blessed2object_to_js(PerlObjectData* pod) {
+    Handle<Value> to_js = pod->object->Get(string_to_js);
+
+    if (to_js.IsEmpty() || !to_js->IsFunction())
+        return pod;
+
+    Handle<Value> val = Handle<Function>::Cast(to_js)->Call(pod->object, 0, NULL);
+    Handle<Object> object = Persistent<Object>::New(val->ToObject());
+
+    SV* sv = pod->sv;
+    delete pod;
+
+    return new PerlObjectData(this, object, sv);
+}
+
+PerlObjectData*
+V8Context::blessed2object_convert(SV* sv) {
+    Handle<Object> object = Object::New();
+    Handle<Object> prototype = get_prototype(sv);
+    object->SetPrototype(prototype);
+
+    return new PerlObjectData(this, object, sv);
+}
+
 Handle<Object>
 V8Context::blessed2object(SV *sv) {
-    Handle<Object> object = Object::New();
-    object->SetPrototype(get_prototype(sv));
-
-    return (new PerlObjectData(this, object, sv))->object;
+    return blessed2object_to_js(blessed2object_convert(sv))->object;
 }
 
 Handle<Array>
