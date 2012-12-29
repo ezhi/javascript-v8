@@ -826,6 +826,7 @@ XS(v8closure) {
             if (call_is_method(PL_op)) {
                 object = (*argv)->ToObject();
                 argv_ptr = argv + 1;
+                items--;
             }
             else {
                 object = ctx->Global();
