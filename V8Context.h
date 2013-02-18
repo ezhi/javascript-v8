@@ -110,6 +110,7 @@ class V8Context {
         Handle<Value> sv2v8(SV*);
         SV*           v82sv(Handle<Value>);
 
+        Isolate *isolate;
         Persistent<Context> context;
 
         void register_object(ObjectData* data);
@@ -118,6 +119,8 @@ class V8Context {
         Persistent<Function> make_function;
 
         bool enable_wantarray;
+
+        SV* my_sv;
 
     private:
         Handle<Value>    sv2v8(SV*, HandleMap& seen);

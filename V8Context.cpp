@@ -1,4 +1,6 @@
 #include "V8Context.h"
+#include "V8Thread.h"
+#include "V8Util.h"
 
 #include <pthread.h>
 #include <time.h>
@@ -10,27 +12,14 @@
 #define INT32_MIN (-0x7fffffff-1)
 #endif
 
-#define L(...) fprintf(stderr, ##__VA_ARGS__)
-
 using namespace v8;
 using namespace std;
 
 int V8Context::number = 0;
 
 void set_perl_error(const TryCatch& try_catch) {
-    Handle<Message> msg = try_catch.Message();
-
-    char message[1024];
-    snprintf(
-        message,
-        1024,
-        "%s at %s:%d",
-        *(String::Utf8Value(try_catch.Exception())),
-        !msg.IsEmpty() ? *(String::AsciiValue(msg->GetScriptResourceName())) : "EVAL",
-        !msg.IsEmpty() ? msg->GetLineNumber() : 0
-    );
-
-    sv_setpv(ERRSV, message);
+    auto_ptr<string> message = error_message(try_catch);
+    sv_setpv(ERRSV, message->c_str());
     sv_utf8_upgrade(ERRSV);
 }
 
@@ -148,8 +137,12 @@ ObjectData::ObjectData(V8Context* context_, Handle<Object> object_, SV* sv_)
 }
 
 ObjectData::~ObjectData() {
-    if (context) context->remove_object(this);
-    object.Dispose();
+    {
+        Isolate::Scope isolate_scope(context->isolate);
+        Locker locker(context->isolate);
+        object.Dispose();
+    }
+    context->remove_object(this);
 }
 
 PerlObjectData::PerlObjectData(V8Context* context_, Handle<Object> object_, SV* sv_)
@@ -305,11 +298,16 @@ V8Context::V8Context(
       bless_prefix(bless_prefix_),
       enable_blessing(enable_blessing_)
 {
+    isolate = Isolate::New();
+    Isolate::Scope isolate_scope(isolate);
+    Locker locker(isolate);
     V8::SetFlagsFromString(flags, strlen(flags));
     context = Context::New();
 
     Context::Scope context_scope(context);
     HandleScope handle_scope;
+
+    V8Thread::install(context->Global());
 
     Local<FunctionTemplate> tmpl = FunctionTemplate::New(PerlFunctionData::v8invoke);
     context->Global()->Set(
@@ -339,30 +337,36 @@ V8Context::V8Context(
 void V8Context::register_object(ObjectData* data) {
     seen_perl[data->ptr] = data;
     data->object->SetHiddenValue(string_wrap, External::Wrap(data));
+    SvREFCNT_inc(my_sv);
 }
 
 void V8Context::remove_object(ObjectData* data) {
-    ObjectDataMap::iterator it = seen_perl.find(data->ptr);
-    if (it != seen_perl.end())
-        seen_perl.erase(it);
-    data->object->DeleteHiddenValue(string_wrap);
+    {
+        Isolate::Scope isolate_scope(isolate);
+        Locker locker(isolate);
+        ObjectDataMap::iterator it = seen_perl.find(data->ptr);
+        if (it != seen_perl.end())
+            seen_perl.erase(it);
+        data->object->DeleteHiddenValue(string_wrap);
+    }
+    SvREFCNT_dec(my_sv);
 }
 
 V8Context::~V8Context() {
-    for (ObjectDataMap::iterator it = seen_perl.begin(); it != seen_perl.end(); it++) {
-        it->second->context = NULL;
-    }
-    seen_perl.clear();
-
+    isolate->Enter();
+    while (!V8::IdleNotification()); // force garbage collection
     for (ObjectMap::iterator it = prototypes.begin(); it != prototypes.end(); it++) {
       it->second.Dispose();
     }
     context.Dispose();
-    while(!V8::IdleNotification()); // force garbage collection
+    isolate->Exit();
+    isolate->Dispose();
 }
 
 void
 V8Context::bind(const char *name, SV *thing) {
+    Isolate::Scope isolate_scope(isolate);
+    Locker locker(isolate);
     HandleScope scope;
     Context::Scope context_scope(context);
 
@@ -372,8 +376,9 @@ V8Context::bind(const char *name, SV *thing) {
 // I fucking hate pthreads, this lacks error handling, but hopefully works.
 class thread_canceller {
 public:
-    thread_canceller(int sec)
-        : sec_(sec)
+    thread_canceller(Isolate* isolate, int sec)
+        : isolate_(isolate)
+        , sec_(sec)
     {
         if (sec_) {
             pthread_cond_init(&cond_, NULL);
@@ -406,7 +411,7 @@ private:
         ts.tv_nsec = tv.tv_usec * 1000;
 
         if (pthread_cond_timedwait(&me->cond_, &me->mutex_, &ts) == ETIMEDOUT) {
-            V8::TerminateExecution();
+            V8::TerminateExecution(me->isolate_);
         }
         pthread_mutex_unlock(&me->mutex_);
     }
@@ -415,10 +420,13 @@ private:
     pthread_cond_t cond_;
     pthread_mutex_t mutex_;
     int sec_;
+    Isolate* isolate_;
 };
 
 SV*
 V8Context::eval(SV* source, SV* origin) {
+    Locker locker(isolate);
+    Isolate::Scope isolate_scope(isolate);
     HandleScope handle_scope;
     TryCatch try_catch;
     Context::Scope context_scope(context);
@@ -432,7 +440,7 @@ V8Context::eval(SV* source, SV* origin) {
         set_perl_error(try_catch);
         return &PL_sv_undef;
     } else {
-        thread_canceller canceller(time_limit_);
+        thread_canceller canceller(isolate, time_limit_);
         Handle<Value> val = script->Run();
 
         if (val.IsEmpty()) {
@@ -805,16 +813,22 @@ XS(v8closure) {
     int count = 1;
 
     {
+        V8FunctionData* data = (V8FunctionData*)sv_object_data((SV*)cv);
+
         /* We have to do all this inside a block so that all the proper
          * destuctors are called if we need to croak. If we just croak in the
          * middle of the block, v8 will segfault at program exit. */
-        TryCatch        try_catch;
-        HandleScope     scope;
-        V8FunctionData* data = (V8FunctionData*)sv_object_data((SV*)cv);
         if (data->context) {
-            V8Context      *self = data->context;
+            V8Context*      self = data->context;
+            Isolate*        isolate = self->isolate;
+            Isolate::Scope  isolate_scope(isolate);
+            Locker          locker(isolate);
+
             Handle<Context> ctx  = self->context;
             Context::Scope  context_scope(ctx);
+            HandleScope     scope;
+            TryCatch        try_catch;
+
             Handle<Object>  object;
             Handle<Value>   argv[items];
             Handle<Value>   *argv_ptr;

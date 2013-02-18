@@ -8,7 +8,7 @@ use utf8;
 use strict;
 use warnings;
 
-my $context = JavaScript::V8::Context->new();
+my $context = JavaScript::V8::Context->new( flags => '--expose-gc' );
 
 $context->bind( 
     warn => sub { warn(@_) },
@@ -123,7 +123,7 @@ $context->set_flags_from_string("--expose-gc");
         $c->{on_destroy} = sub { $destroyed = 1 };
         $context->eval('(function(c) { return c.get() + 1; })')->($c);
     }
-    1 while !$context->idle_notification;
+    $context->eval('gc()');
 
     ok $destroyed, 'local js object is destroyed after perl scope is done';
 }

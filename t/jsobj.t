@@ -141,8 +141,7 @@ like $@, qr{SomeError.*at counter\.js:\d+}, 'js method error propagates to perl'
         $context->eval('var c = new Counter(); c.set(77); c');
     };
 
-    eval { $c->get };
-    like $@, qr{context is no more}, 'object gracefully stops working if it outlives its context';
+    is $c->get, 77, 'live object keeps context alive';
 }
 
 {
