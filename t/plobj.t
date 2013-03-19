@@ -176,7 +176,7 @@ $context->set_flags_from_string("--expose-gc");
     $@ = undef;
 
     is $context->eval('(function (c) { c.increase(); return c.value(); })')->($c), $c->get + 1;
-    is $context->eval('(function (c) { c.increase(); return c.value(); })')->($c), $c->get + 2;
+    is $context->eval('(function (c) { c.increase(); return c.value(); })')->($c), $c->get + 1;
 }
 
 done_testing;

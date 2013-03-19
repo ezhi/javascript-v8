@@ -672,20 +672,22 @@ V8Context::rv2v8(SV *rv, HandleMap& seen) {
     return Undefined();
 }
 
-PerlObjectData*
+Handle<Object>
 V8Context::blessed2object_to_js(PerlObjectData* pod) {
     Handle<Value> to_js = pod->object->Get(string_to_js);
+    Handle<Object> object;
 
-    if (to_js.IsEmpty() || !to_js->IsFunction())
-        return pod;
+    if (to_js.IsEmpty() || !to_js->IsFunction()) {
+        object = pod->object;
+    }
+    else {
+        Handle<Value> val = Handle<Function>::Cast(to_js)->Call(pod->object, 0, NULL);
+        object = Persistent<Object>::New(val->ToObject());
 
-    Handle<Value> val = Handle<Function>::Cast(to_js)->Call(pod->object, 0, NULL);
-    Handle<Object> object = Persistent<Object>::New(val->ToObject());
+        delete pod;
+    }
 
-    SV* sv = pod->sv;
-    delete pod;
-
-    return new PerlObjectData(this, object, sv);
+    return object;
 }
 
 PerlObjectData*
@@ -699,7 +701,7 @@ V8Context::blessed2object_convert(SV* sv) {
 
 Handle<Object>
 V8Context::blessed2object(SV *sv) {
-    return blessed2object_to_js(blessed2object_convert(sv))->object;
+    return blessed2object_to_js(blessed2object_convert(sv));
 }
 
 Handle<Array>

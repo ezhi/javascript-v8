@@ -134,7 +134,7 @@ class V8Context {
         Handle<Object>   blessed2object(SV *sv);
 
         PerlObjectData*  blessed2object_convert(SV *sv);
-        PerlObjectData*  blessed2object_to_js(PerlObjectData* pod);
+        Handle<Object>   blessed2object_to_js(PerlObjectData* pod);
 
         SV* array2sv(Handle<Array>, SvMap& seen);
         SV* object2sv(Handle<Object>, SvMap& seen);
