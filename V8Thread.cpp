@@ -17,10 +17,10 @@ void* __run(void *data_) {
 V8Thread::V8Thread(const char *code, const char *origin) {
     isolate = Isolate::New();
 
-    Locker locker(isolate);
     Isolate::Scope isolate_scope(isolate);
-    context = Context::New();
+    Locker locker(isolate);
     HandleScope handle_scope;
+    context = Persistent<Context>::New(isolate, Context::New(isolate));
     Context::Scope context_scope(context);
     TryCatch try_catch;
 
@@ -34,7 +34,7 @@ V8Thread::V8Thread(const char *code, const char *origin) {
 
 
     if (!value.IsEmpty() && value->IsFunction()) {
-        function = Persistent<Function>::New(Handle<Function>::Cast(value));
+        function = Persistent<Function>::New(isolate, Handle<Function>::Cast(value));
     }
     else {
         throw auto_ptr<string>(new string("Not a function."));
@@ -81,7 +81,7 @@ V8Thread::join() {
   
 V8Thread::~V8Thread() {
     isolate->Enter();
-    context.Dispose();
+    context.Dispose(isolate);
     isolate->Exit();
     isolate->Dispose();
 }
@@ -92,9 +92,9 @@ V8Thread::_create(const Arguments& args) {
 
     try {
         V8Thread* thread = new V8Thread(*String::AsciiValue(args[0]), *String::AsciiValue(args[1]));
-        args.This()->SetInternalField(0, External::Wrap(thread));
-        Persistent<Object> self = Persistent<Object>::New(args.Holder());
-        self.MakeWeak((void*)thread, V8Thread::_destroy);
+        args.This()->SetInternalField(0, External::New(thread));
+        Persistent<Object> self = Persistent<Object>::New(thread->isolate, args.Holder());
+        self.MakeWeak(thread->isolate, (void*)thread, V8Thread::_destroy);
         return self;
     } catch (auto_ptr<string> msg) {
         ThrowException(Exception::Error(String::New(msg->c_str())));
@@ -105,14 +105,14 @@ V8Thread::_create(const Arguments& args) {
 
 Handle<Value>
 V8Thread::_start(const Arguments& args) {
-    V8Thread* thread = (V8Thread*)External::Unwrap(args.This()->GetInternalField(0));
+    V8Thread* thread = (V8Thread*)External::Cast(*(args.This()->GetInternalField(0)))->Value();
     thread->start(*String::AsciiValue(args[0]));
     return Undefined();
 }
 
 Handle<Value>
 V8Thread::_join(const Arguments& args) {
-    V8Thread* thread = (V8Thread*)External::Unwrap(args.This()->GetInternalField(0));
+    V8Thread* thread = (V8Thread*)External::Cast(*(args.This()->GetInternalField(0)))->Value();
     auto_ptr<thread_status> status(thread->join());
 
     if (status->error.get()) {
@@ -125,7 +125,7 @@ V8Thread::_join(const Arguments& args) {
 }
 
 void
-V8Thread::_destroy(Persistent<Value> object, void* data) {
+V8Thread::_destroy(Isolate* isolate, Persistent<Value> object, void* data) {
     delete static_cast<V8Thread*>(data);
 }
 

@@ -86,7 +86,7 @@ public:
     virtual size_t size();
     void add_size(size_t bytes_);
 
-    static void destroy(Persistent<Value> object, void *data);
+    static void destroy(Isolate* isolate, Persistent<Value> object, void *data);
 };
 
 typedef map<int, ObjectData*> ObjectDataMap;

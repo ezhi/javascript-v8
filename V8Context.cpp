@@ -126,7 +126,7 @@ SV* SvMap::find(Handle<Object> object) {
 
 ObjectData::ObjectData(V8Context* context_, Handle<Object> object_, SV* sv_)
     : context(context_)
-    , object(Persistent<Object>::New(object_))
+    , object(Persistent<Object>::New(context_->isolate, object_))
     , sv(sv_)
 {
     if (!sv) return;
@@ -140,7 +140,7 @@ ObjectData::~ObjectData() {
     {
         Isolate::Scope isolate_scope(context->isolate);
         Locker locker(context->isolate);
-        object.Dispose();
+        object.Dispose(context->isolate);
     }
     context->remove_object(this);
 }
@@ -156,7 +156,7 @@ PerlObjectData::PerlObjectData(V8Context* context_, Handle<Object> object_, SV* 
     add_size(calculate_size(sv));
     ptr = PTR2IV(sv);
 
-    object.MakeWeak(this, PerlObjectData::destroy);
+    object.MakeWeak(context_->isolate, this, PerlObjectData::destroy);
 }
 
 size_t PerlObjectData::size() {
@@ -189,7 +189,7 @@ int V8ObjectData::svt_free(pTHX_ SV* sv, MAGIC* mg) {
     return 0;
 };
 
-void PerlObjectData::destroy(Persistent<Value> object, void *data) {
+void PerlObjectData::destroy(Isolate* isolate, Persistent<Value> object, void *data) {
     delete static_cast<PerlObjectData*>(data);
 }
 
@@ -215,7 +215,7 @@ public:
 class PerlFunctionData;
 
 Handle<Object> MakeFunction(V8Context* context, PerlFunctionData* fd) {
-    Handle<Value> wrap(External::Wrap(fd));
+    Handle<Value> wrap(External::New(fd));
 
     return Handle<Object>::Cast(
         context->make_function->Call(
@@ -241,7 +241,7 @@ public:
     { }
 
     static Handle<Value> v8invoke(const Arguments& args) {
-        PerlFunctionData* data = static_cast<PerlFunctionData*>(External::Unwrap(args[0]));
+        PerlFunctionData* data = static_cast<PerlFunctionData*>(External::Cast(*(args[0]))->Value());
         return data->invoke(args);
     }
 };
@@ -301,11 +301,10 @@ V8Context::V8Context(
     isolate = Isolate::New();
     Isolate::Scope isolate_scope(isolate);
     Locker locker(isolate);
-    V8::SetFlagsFromString(flags, strlen(flags));
-    context = Context::New();
-
-    Context::Scope context_scope(context);
     HandleScope handle_scope;
+    V8::SetFlagsFromString(flags, strlen(flags));
+    context = Persistent<Context>::New(isolate, Context::New(isolate));
+    Context::Scope context_scope(context);
 
     V8Thread::install(context->Global());
 
@@ -326,17 +325,17 @@ V8Context::V8Context(
             "})"
         )
     );
-    make_function = Persistent<Function>::New(Handle<Function>::Cast(script->Run()));
+    make_function = Persistent<Function>::New(isolate, Handle<Function>::Cast(script->Run()));
 
-    string_wrap = Persistent<String>::New(String::New("wrap"));
-    string_to_js = Persistent<String>::New(String::New("to_js"));
+    string_wrap = Persistent<String>::New(isolate, String::New("wrap"));
+    string_to_js = Persistent<String>::New(isolate, String::New("to_js"));
 
     number++;
 }
 
 void V8Context::register_object(ObjectData* data) {
     seen_perl[data->ptr] = data;
-    data->object->SetHiddenValue(string_wrap, External::Wrap(data));
+    data->object->SetHiddenValue(string_wrap, External::New(data));
     SvREFCNT_inc(my_sv);
 }
 
@@ -356,9 +355,9 @@ V8Context::~V8Context() {
     isolate->Enter();
     while (!V8::IdleNotification()); // force garbage collection
     for (ObjectMap::iterator it = prototypes.begin(); it != prototypes.end(); it++) {
-      it->second.Dispose();
+      it->second.Dispose(isolate);
     }
-    context.Dispose();
+    context.Dispose(isolate);
     isolate->Exit();
     isolate->Dispose();
 }
@@ -493,7 +492,7 @@ SV* V8Context::seen_v8(Handle<Object> object) {
     if (wrap.IsEmpty())
         return NULL;
 
-    ObjectData* data = (ObjectData*)External::Unwrap(wrap);
+    ObjectData* data = (ObjectData*)External::Cast(*wrap)->Value();
     return newRV(data->sv);
 }
 
@@ -629,7 +628,7 @@ V8Context::get_prototype(SV *sv) {
         prototype = it->second;
     }
     else {
-        prototype = prototypes[pkg] = Persistent<Object>::New(Object::New());
+        prototype = prototypes[pkg] = Persistent<Object>::New(isolate, Object::New());
         fill_prototype_isa(prototype, stash);
         fixup_prototype(prototype);
     }
@@ -682,7 +681,7 @@ V8Context::blessed2object_to_js(PerlObjectData* pod) {
     }
     else {
         Handle<Value> val = Handle<Function>::Cast(to_js)->Call(pod->object, 0, NULL);
-        object = Persistent<Object>::New(val->ToObject());
+        object = Persistent<Object>::New(isolate, val->ToObject());
 
         delete pod;
     }

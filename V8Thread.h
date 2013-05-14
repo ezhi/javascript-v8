@@ -27,7 +27,7 @@ public:
     static Handle<Value> _create(const Arguments& args);
     static Handle<Value> _start(const Arguments& args);
     static Handle<Value> _join(const Arguments& args);
-    static void _destroy(Persistent<Value> object, void* data);
+    static void _destroy(Isolate* isolate, Persistent<Value> object, void* data);
 
     void start(const char* code);
     thread_status* run(const char* arg);
