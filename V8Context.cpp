@@ -437,14 +437,14 @@ V8Context::eval(SV* source, SV* origin) {
 
     if (try_catch.HasCaught()) {
         set_perl_error(try_catch);
-        return &PL_sv_undef;
+        return newSV(0);
     } else {
         thread_canceller canceller(isolate, time_limit_);
         Handle<Value> val = script->Run();
 
         if (val.IsEmpty()) {
             set_perl_error(try_catch);
-            return &PL_sv_undef;
+            return newSV(0);
         } else {
             sv_setsv(ERRSV,&PL_sv_undef);
             return v82sv(val);
@@ -499,10 +499,10 @@ SV* V8Context::seen_v8(Handle<Object> object) {
 SV *
 V8Context::v82sv(Handle<Value> value, SvMap& seen) {
     if (value->IsUndefined())
-        return &PL_sv_undef;
+        return newSV(0);
 
     if (value->IsNull())
-        return &PL_sv_undef;
+        return newSV(0);
 
     if (value->IsInt32())
         return newSViv(value->Int32Value());
@@ -546,7 +546,7 @@ V8Context::v82sv(Handle<Value> value, SvMap& seen) {
     }
 
     warn("Unknown v8 value in v82sv");
-    return &PL_sv_undef;
+    return newSV(0);
 }
 
 SV *
